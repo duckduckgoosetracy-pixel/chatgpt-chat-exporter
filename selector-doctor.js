@@ -2696,7 +2696,7 @@
                 const maxBytes = Math.min(budget.perImage, budget.remaining);
                 let dataUrl = '';
                 if (maxBytes > 0) {
-                    const response = await fetchWithoutTimeout(doc, url, { credentials: 'omit' }, Infinity,
+                    const response = await fetchWithoutTimeout(doc, url, { credentials: 'omit' },
                         response => readImageBody(response, maxBytes));
                     const mimeType = imageMimeType(response?.headers?.get?.('content-type'));
                     if (response?.ok && mimeType && response.body instanceof Uint8Array && response.body.byteLength > 0) {
@@ -3649,9 +3649,7 @@
                 capture();
             }
 
-            // The sweep's deadline bounds the sweep. Reading the stored conversation
-            // afterwards has budgets of its own: it is what can still complete an
-            // export whose sweep ran out of time (issue #41).
+            // Resolve deferred media and enrich the conversation after the DOM sweep.
             const sweptInTime = !outOfTime();
             await resolveDeferredMedia(state.messages, state.imageBudget, doc, format, (done, total) => emitProgress({
                 ...describe('attachments'), percent: Math.round(100 * done / total), lastPreview: `Image ${done} of ${total}`
