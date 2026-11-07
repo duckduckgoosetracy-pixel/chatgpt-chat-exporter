@@ -3503,18 +3503,10 @@
             // maxDuration no longer just buys a longer stall.
             const awaitVisible = async () => {
                 if (!doc.hidden) return true;
-                if (hiddenBudget <= 0) return false;
-
-                console.warn('[Chat Exporter] This tab is in the background — bring it to the front to continue. The export clock is paused while it waits.');
+                console.warn('[Chat Exporter] This tab is in the background — bring it to the front to continue.');
                 emitProgress(describe('hidden'));
-                const startedHidden = now(win);
                 while (doc.hidden) {
                     await wait(200);
-                }
-
-                if (doc.hidden) {
-                    console.warn(`[Chat Exporter] Still in the background after ${Math.round(waited / 1000)}s — exporting only what is currently on the page.`);
-                    return false;
                 }
                 console.log('[Chat Exporter] Tab is back in front — resuming the sweep.');
                 emitProgress(describe('resumed'));
@@ -3648,11 +3640,15 @@
             const awaitOlderHistory = async scroller => {
                 const height = scroller.scrollHeight;
                 emitProgress(describe('history'));
-                while (!outOfTime()) {
+                let quietSince = now(win);
+                while (now(win) - quietSince < historyWait) {
                     scroller.scrollTop = scrollRange(scroller).top;
                     await wait(Math.min(scrollDelay, 250));
                     if (scroller.scrollHeight !== height) return true;
-                    if (doc.hidden && !(await awaitVisible())) return false;
+                    if (doc.hidden) {
+                        await awaitVisible();
+                        quietSince = now(win);
+                    }
                 }
                 return scroller.scrollHeight !== height;
             };
