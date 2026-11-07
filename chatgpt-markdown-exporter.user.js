@@ -3432,17 +3432,9 @@
                 return waiting;
             };
 
-            // The extraction process is not terminated by an elapsed-time budget.
+            // Keep the sweep alive while the tab is hidden; the browser pauses
+            // background rendering and resumes it when the reader returns.
             const outOfTime = () => false;
-
-            // A hidden tab gets its timers throttled and its off-screen rendering
-            // suspended, so the sweep crawls and the provider may never mount the
-            // turns being scrolled to. Waiting beats exporting a fragment.
-            // Waiting for the reader used to be charged to the export's own clock:
-            // a backgrounded tab burned the whole maxDuration doing nothing, said
-            // so once, and then saved whatever happened to be mounted. The wait now
-            // draws on its own budget and gives the time back, so raising
-            // maxDuration no longer just buys a longer stall.
             const awaitVisible = async () => {
                 if (!doc.hidden) return true;
                 console.warn('[Chat Exporter] This tab is in the background — bring it to the front to continue.');
@@ -3665,7 +3657,7 @@
             }
 
             // Resolve deferred media and enrich the conversation after the DOM sweep.
-            const sweptInTime = !outOfTime();
+            const sweptInTime = true;
             await resolveDeferredMedia(state.messages, state.imageBudget, doc, format, (done, total) => emitProgress({
                 ...describe('attachments'), percent: Math.round(100 * done / total), lastPreview: `Image ${done} of ${total}`
             }));
@@ -3692,18 +3684,17 @@
             conversation.source = 'dom';
             conversation.missedMessages = missed;
             // An export can look clean and still be short: every turn the sweep saw
-            // was captured, but the sweep never reached the top. Only the payload
-            // can tell us that, and it is the difference between a heuristic and
-            // proof — proof that also stands in for a sweep that ran out of time.
+            // was captured, but the sweep never reached the top. The payload can
+            // identify messages that the DOM sweep did not reach.
             const unreached = conversation.unreachedMessages || 0;
             const verified = conversation.metadataStatus === 'enriched' && unreached === 0;
             conversation.complete = missed === 0 && unreached === 0 && !conversation.unresolvedReports &&
                 !conversation.invalidPayload && !conversation.unfinishedMessages && settled && (sweptInTime || verified);
             if (unreached > 0) {
-                console.warn(`[Chat Exporter] ${unreached} of ${conversation.expectedMessages} messages in this conversation were never reached by the scroll sweep. Raise maxDuration and keep the tab in the foreground.`);
+                console.warn(`[Chat Exporter] ${unreached} of ${conversation.expectedMessages} messages in this conversation were never reached by the scroll sweep. Keep the tab in the foreground and try the export again.`);
             }
             if (!settled) {
-                console.warn('[Chat Exporter] The answer was still being written when the export ran out of time; the last message may be cut off.');
+                console.warn('[Chat Exporter] The answer was still being written when the export ran; the last message may be cut off.');
             }
             emitProgress({
                 ...describe('done'),
@@ -4375,7 +4366,7 @@
                     (conversation.unresolvedReports ? `, ${conversation.unresolvedReports} Deep Research report(s) unavailable` : '') +
                     (conversation.recoveredMessages ? `, ${conversation.recoveredMessages} recovered from ChatGPT's record` : '') +
                     '.\n\nKeep the ChatGPT tab in the foreground while exporting, then try again' +
-                    (conversation.unreachedMessages ? ' with a larger maxDuration' : '') + '.';
+                    '.';
                 if (typeof win?.alert === 'function') win.alert(message);
             }
 
