@@ -155,7 +155,13 @@
         }
 
         const win = doc.defaultView;
-        const setTimer = win?.setTimeout?.bind(win) || setTimeout;
+        const waitFrames = ms => new Promise(resolve => {
+            const requestFrame = win?.requestAnimationFrame?.bind(win);
+            if (!requestFrame) { resolve(); return; }
+            const started = win.performance?.now?.() ?? Date.now();
+            const tick = timestamp => timestamp - started >= ms ? resolve() : requestFrame(tick);
+            requestFrame(tick);
+        });
         let removed = false;
 
         const destroy = () => {
@@ -220,14 +226,14 @@
                     destroy();
                     return;
                 }
-                setTimer(() => {
+                waitFrames(LINGER_AFTER_DONE).then(() => {
                     try {
                         parts.card.style.opacity = '0';
                     } catch (error) {
                         // Cosmetic only.
                     }
-                    setTimer(destroy, 260);
-                }, LINGER_AFTER_DONE);
+                    return waitFrames(260);
+                }).then(destroy);
             } catch (error) {
                 // A progress card that cannot draw itself gets out of the way.
                 destroy();
