@@ -11,7 +11,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rashidazarang/chatgpt-chat-exporter.git"
+    "url": "git+https://github.com/duckduckgoosetracy-pixel/chatgpt-chat-exporter.git"
   },
   "keywords": [
     "chatgpt",
@@ -26,9 +26,9 @@
   "license": "MIT",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/rashidazarang/chatgpt-chat-exporter/issues"
+    "url": "https://github.com/duckduckgoosetracy-pixel/chatgpt-chat-exporter/issues"
   },
-  "homepage": "https://github.com/rashidazarang/chatgpt-chat-exporter#readme",
+  "homepage": "https://github.com/duckduckgoosetracy-pixel/chatgpt-chat-exporter#readme",
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "jsdom": "30.1.1",
