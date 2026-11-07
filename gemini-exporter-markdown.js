@@ -29,10 +29,6 @@
         // gives up, so a virtualizer that drags scrollTop backwards gets retries.
         const MAX_SCROLL_STALLS = 5;
 
-        // Wall-clock budget for a full sweep. Step counts alone can't bound it —
-        // a provider that keeps changing height would hold the page for minutes.
-        const DEFAULT_MAX_DURATION = 120000;
-
         // Scroll steps a sweep may take. The wall clock is the real bound; this
         // only stops a loop that costs no time. A 166-message conversation in a
         // short window needed 730 steps, so 400 cut it off halfway.
@@ -44,10 +40,6 @@
         // conversation (verified live 2026-09-27).
         const HISTORY_WAIT = 8000;
 
-        // Wall-clock cap on reading the page's own image files after a sweep.
-        // They are local, so this only guards against a read that never returns.
-        const PAGE_MEDIA_MAX_DURATION = 60000;
-
         // How long to watch the newest answer before deciding it has stopped
         // growing. Short enough not to be felt on an idle conversation.
         const STREAM_SETTLE_INTERVAL = 250;
@@ -57,11 +49,6 @@
         // step whether or not the virtualizer had already finished — on a long
         // conversation that is most of the export's wall clock.
         const RENDER_QUIET_INTERVAL = 60;
-
-        // Total time the sweep will wait for a hidden tab to come back before
-        // giving up and exporting what is on the page. Separate from maxDuration:
-        // waiting on the reader is not the export spending its budget.
-        const MAX_HIDDEN_WAIT = 60000;
 
         // How often a long sweep says where it has got to. Minutes of silence read
         // as a hang.
@@ -99,19 +86,6 @@
             '[data-create-time]'
         ].join(', ');
 
-        const METADATA_FETCH_TIMEOUT = 5000;
-        const METADATA_MAX_DURATION = 15000;
-        // The primary conversation can be megabytes; optional metadata should
-        // still fail quickly. Keep their budgets separate (issue #41).
-        const CONVERSATION_FETCH_TIMEOUT = 60000;
-        const CONVERSATION_MAX_DURATION = 120000;
-        // Images cost two requests each and are what a reader misses first. One
-        // fixed 15s budget embedded the first few of a conversation's images and
-        // left the rest as placeholders (41 of 48 in a real export), so the image
-        // budget grows with how many there are, within a cap.
-        const ATTACHMENT_FETCH_TIMEOUT = 15000;
-        const ATTACHMENT_TIME_PER_IMAGE = 3000;
-        const ATTACHMENT_MAX_DURATION = 180000;
         const MAX_EMBEDDED_IMAGE_BYTES = 20 * 1024 * 1024;
         const MAX_TOTAL_EMBEDDED_IMAGE_BYTES = 50 * 1024 * 1024;
 
@@ -2271,16 +2245,6 @@
             }
         }
 
-        function metadataRequestTimeout() { return Infinity; }
-
-        // An image download moves bytes, not a small JSON answer, so it gets a
-        // longer per-request timeout than metadata unless one was set explicitly.
-        function attachmentRequestTimeout() { return Infinity; }
-
-        // Explicit budgets win; otherwise attachments get the metadata budget plus
-        // a share per image, capped.
-        function attachmentDeadline() { return Infinity; }
-
         async function readJsonBody(response) {
             if (!response) return null;
             try {
@@ -2322,11 +2286,8 @@
             if (!auth) return '';
             if (!refresh && (auth.token || auth.sessionRead)) return auth.token;
 
-            const timeout = metadataRequestTimeout(doc, options);
-            if (timeout <= 0) return auth.token;
-
             auth.sessionRead = true;
-            const response = await fetchWithoutTimeout(doc, CHATGPT_SESSION_ENDPOINT, {}, timeout);
+            const response = await fetchWithoutTimeout(doc, CHATGPT_SESSION_ENDPOINT);
             // An unreachable session endpoint means "unknown", not "signed out" —
             // a cookie-only attempt is still worth making in that case.
             if (!response?.ok) return auth.token;
@@ -2344,12 +2305,9 @@
             if (auth.accountIds) return auth.accountIds;
             auth.accountIds = [];
 
-            const timeout = metadataRequestTimeout(doc, options);
-            if (timeout <= 0) return auth.accountIds;
-
             const response = await fetchWithoutTimeout(doc, CHATGPT_ACCOUNTS_ENDPOINT, {
                 headers: chatGptAuthHeaders({ token: auth.token })
-            }, timeout);
+            });
             if (!response?.ok) return auth.accountIds;
 
             const payload = response.body;
@@ -2377,14 +2335,9 @@
         }
 
         async function attemptChatGptJson(doc, options, endpoint) {
-            const timeout = metadataRequestTimeout(doc, endpoint.startsWith('/backend-api/conversation/')
-                ? { ...options, metadataFetchTimeout: options.conversationFetchTimeout ?? options.metadataFetchTimeout ?? CONVERSATION_FETCH_TIMEOUT }
-                : options);
-            if (timeout <= 0) return { reason: 'timeout' };
-
             const response = await fetchWithoutTimeout(doc, endpoint, {
                 headers: chatGptAuthHeaders(options.chatGptAuth)
-            }, timeout);
+            });
             if (!response) return { reason: 'network' };
 
             const body = response.body;
@@ -2434,15 +2387,12 @@
         }
 
         async function attemptChatGptText(doc, options, endpoint) {
-            const timeout = metadataRequestTimeout(doc, options);
-            if (timeout <= 0) return { reason: 'timeout' };
-
             const response = await fetchWithoutTimeout(doc, endpoint, {
                 headers: {
                     ...chatGptAuthHeaders(options.chatGptAuth),
                     Accept: 'text/event-stream'
                 }
-            }, timeout, response => response.ok ? response.text() : readJsonBody(response));
+            }, undefined, response => response.ok ? response.text() : readJsonBody(response));
             if (!response) return { reason: 'network' };
             if (response.ok) return { reason: 'ok', body: response.body };
 
@@ -2599,7 +2549,7 @@
             if (reason === 'auth') {
                 return 'ChatGPT would not authorize the request for this conversation';
             }
-            if (reason === 'timeout' || reason === 'network') {
+            if (reason === 'network') {
                 return 'the request to ChatGPT did not complete in time';
             }
             return `ChatGPT answered ${String(reason).replace(/^status:/, 'HTTP ')} — a temporary chat, a shared link or a deleted conversation has no stored copy to read`;
@@ -2691,15 +2641,13 @@
 
         async function fetchEmbeddedImage(doc, descriptor, options) {
             if (!descriptor.fileId) return null;
-            let timeout = attachmentRequestTimeout(doc, options);
-            if (timeout <= 0) return null;
             const maxBytes = options.maxEmbeddedImageBytes ?? MAX_EMBEDDED_IMAGE_BYTES;
             const endpoint = `/backend-api/files/download/${encodeURIComponent(descriptor.fileId)}?inline=true`;
             // The same private API behind the same session: without the bearer
             // token this hands back the signed-out shape rather than the file.
             let response = await fetchWithoutTimeout(doc, endpoint, {
                 headers: chatGptAuthHeaders(options.chatGptAuth)
-            }, timeout, response => readImageBody(response, maxBytes));
+            }, undefined, response => readImageBody(response, maxBytes));
             if (!response?.ok) return null;
 
             let contentType = String(response.headers?.get?.('content-type') || '');
@@ -2715,11 +2663,9 @@
                 // there would hand the reader's ChatGPT credentials to a
                 // third-party host, so only a same-origin hop stays authenticated.
                 const sameOrigin = isSameOrigin(doc, downloadUrl);
-                timeout = attachmentRequestTimeout(doc, options);
-                if (timeout <= 0) return null;
                 response = await fetchWithoutTimeout(doc, downloadUrl, sameOrigin
                     ? { credentials: 'include', headers: chatGptAuthHeaders(options.chatGptAuth) }
-                    : { credentials: 'omit', redirect: 'follow' }, timeout, response => readImageBody(response, maxBytes));
+                    : { credentials: 'omit', redirect: 'follow' }, undefined, response => readImageBody(response, maxBytes));
                 if (!response?.ok) return null;
                 contentType = String(response.headers?.get?.('content-type') || '');
             }
@@ -2982,7 +2928,7 @@
                     }
 
                     let embedded = null;
-                    if (attachmentRequestTimeout(doc, imageOptions) > 0 && imageBudget.remaining > 0) {
+                    if (imageBudget.remaining > 0) {
                         embedded = await fetchEmbeddedImage(doc, descriptor, { ...imageOptions, maxEmbeddedImageBytes: Math.min(imageBudget.perImage, imageBudget.remaining) });
                     }
                     imagesRead++;
@@ -3196,7 +3142,7 @@
                             continue;
                         }
                         let embedded = null;
-                        if (attachmentRequestTimeout(doc, imageOptions) > 0 && imageBudget.remaining > 0) {
+                        if (imageBudget.remaining > 0) {
                             embedded = await fetchEmbeddedImage(doc, descriptor, { ...imageOptions, maxEmbeddedImageBytes: Math.min(imageBudget.perImage, imageBudget.remaining) });
                         }
                         if (embedded) {
@@ -3855,32 +3801,16 @@
             };
         }
 
-        // A long conversation can need more wall clock than the sweep is allowed,
-        // and the only symptom is a short file with a warning after the fact. The
-        // page itself says how far it has to scroll, so the cost is knowable up
-        // front.
         function estimateSweep(container, options) {
             if (!container) return null;
             const scrollDelay = options.scrollDelay ?? 350;
             const renderQuiet = options.renderQuiet ?? RENDER_QUIET_INTERVAL;
-            const budget = options.maxDuration ?? DEFAULT_MAX_DURATION;
             const step = Math.max(container.clientHeight * 0.75, 200);
             const steps = Math.ceil(Math.max(0, container.scrollHeight - container.clientHeight) / step);
-            // A step costs one quiet interval when the provider renders promptly,
-            // and is capped at scrollDelay when it does not — twice that for a step
-            // whose turns mount late enough to need the second look.
-            const bestMs = steps * renderQuiet;
-            const worstMs = steps * scrollDelay * 2;
             return {
                 steps,
-                estimatedSeconds: Math.round(bestMs / 1000),
-                worstCaseSeconds: Math.round(worstMs / 1000),
-                budgetSeconds: Math.round(budget / 1000),
-                // Judged on the typical cost with headroom, not the pathological
-                // ceiling: a provider that never settles would blow any budget, and
-                // warning about that on every long conversation is the same crying
-                // wolf that got two other warnings demoted.
-                fitsBudget: bestMs * 2 <= budget
+                estimatedSeconds: Math.round(steps * renderQuiet / 1000),
+                worstCaseSeconds: Math.round(steps * scrollDelay * 2 / 1000)
             };
         }
 
@@ -3944,10 +3874,6 @@
                     : '',
                 report.api && report.api.reason !== 'ok' && report.api.reason !== 'no-conversation-id'
                     ? `Per-message metadata is unavailable here (${report.api.reason}).` : '',
-                report.hidden ? 'This tab is in the background; a real export would be throttled.' : '',
-                report.sweep && !report.sweep.fitsBudget
-                    ? `This conversation needs about ${report.sweep.steps} scroll steps — ${report.sweep.estimatedSeconds}s at best, ${report.sweep.worstCaseSeconds}s if turns mount slowly — against a ${report.sweep.budgetSeconds}s budget. Export with a larger maxDuration, e.g. ChatExporterEngine.exportConversationFull({ provider: '${provider.id}', format: 'markdown', maxDuration: ${Math.max(120, Math.ceil(report.sweep.worstCaseSeconds * 1.5 / 30) * 30)}000 }).`
-                    : '',
             ].filter(Boolean);
 
             // Context, not problems. Mixing the two is how a warning list stops
@@ -3956,9 +3882,6 @@
                 report.api?.reason === 'ok' && report.api.payloadMessages > report.messagesFound
                     ? `The conversation has ${report.api.payloadMessages} messages; ${report.messagesFound} are in the page right now. A real export scrolls to reach the rest — this check does not.`
                     : '',
-                report.sweep && report.sweep.fitsBudget
-                    ? `About ${report.sweep.steps} scroll steps, ~${report.sweep.estimatedSeconds}s of a ${report.sweep.budgetSeconds}s budget.`
-                    : ''
             ].filter(Boolean);
 
             return report;
