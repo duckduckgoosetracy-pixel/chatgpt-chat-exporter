@@ -2243,73 +2243,34 @@
         return Array.from(descriptors.values());
     }
 
-    async function fetchWithTimeout(doc, input, init = {}, timeout = METADATA_FETCH_TIMEOUT, consume = readJsonBody) {
+    async function fetchWithoutTimeout(doc, input, init = {}, _ignoredTimeout, consume = readJsonBody) {
         const win = getWindow(doc);
         const fetcher = win?.fetch?.bind(win);
-        if (typeof fetcher !== 'function' || !Number.isFinite(timeout) || timeout <= 0) return null;
-
-        const AbortControllerCtor = win?.AbortController || globalThis.AbortController;
-        const controller = typeof AbortControllerCtor === 'function' ? new AbortControllerCtor() : null;
-        const setTimer = win?.setTimeout?.bind(win) || setTimeout;
-        const clearTimer = win?.clearTimeout?.bind(win) || clearTimeout;
-        let timer;
-        let expired = false;
-        const deadline = new Promise(resolve => {
-            timer = setTimer(() => {
-                expired = true;
-                controller?.abort();
-                resolve(null);
-            }, timeout);
-        });
-
+        if (typeof fetcher !== 'function') return null;
         try {
-            // Race the entire operation, including the body. Abort alone is
-            // insufficient for a stalled/non-compliant fetch implementation.
-            return await Promise.race([deadline, (async () => {
-                const response = await fetcher(input, {
-                    credentials: 'include',
-                    cache: 'no-store',
-                    redirect: 'error',
-                    referrerPolicy: 'no-referrer',
-                    ...init,
-                    ...(controller ? { signal: controller.signal } : {})
-                });
-                if (expired) {
-                    response.body?.cancel?.().catch(() => {});
-                    return null;
-                }
-                const body = await consume(response);
-                return { ok: response.ok, status: response.status, headers: response.headers, body };
-            })()]);
+            const response = await fetcher(input, {
+                credentials: 'include',
+                cache: 'no-store',
+                redirect: 'error',
+                referrerPolicy: 'no-referrer',
+                ...init
+            });
+            const body = await consume(response);
+            return { ok: response.ok, status: response.status, headers: response.headers, body };
         } catch (error) {
             return null;
-        } finally {
-            clearTimer(timer);
         }
     }
 
-    function metadataRequestTimeout(doc, options) {
-        const configured = options.metadataFetchTimeout ?? METADATA_FETCH_TIMEOUT;
-        if (!options.metadataDeadline) return configured;
-        return Math.max(0, Math.min(configured, options.metadataDeadline - now(getWindow(doc))));
-    }
+    function metadataRequestTimeout() { return Infinity; }
 
     // An image download moves bytes, not a small JSON answer, so it gets a
     // longer per-request timeout than metadata unless one was set explicitly.
-    function attachmentRequestTimeout(doc, options) {
-        return metadataRequestTimeout(doc, {
-            ...options,
-            metadataFetchTimeout: options.attachmentFetchTimeout ?? options.metadataFetchTimeout ?? ATTACHMENT_FETCH_TIMEOUT
-        });
-    }
+    function attachmentRequestTimeout() { return Infinity; }
 
     // Explicit budgets win; otherwise attachments get the metadata budget plus
     // a share per image, capped.
-    function attachmentDeadline(doc, options, images, outerDeadline = Infinity) {
-        const budget = options.attachmentMaxDuration ?? options.metadataMaxDuration ??
-            Math.min(ATTACHMENT_MAX_DURATION, METADATA_MAX_DURATION + images * ATTACHMENT_TIME_PER_IMAGE);
-        return Math.min(outerDeadline, now(getWindow(doc)) + budget);
-    }
+    function attachmentDeadline() { return Infinity; }
 
     async function readJsonBody(response) {
         if (!response) return null;
@@ -2356,7 +2317,7 @@
         if (timeout <= 0) return auth.token;
 
         auth.sessionRead = true;
-        const response = await fetchWithTimeout(doc, CHATGPT_SESSION_ENDPOINT, {}, timeout);
+        const response = await fetchWithoutTimeout(doc, CHATGPT_SESSION_ENDPOINT, {}, timeout);
         // An unreachable session endpoint means "unknown", not "signed out" —
         // a cookie-only attempt is still worth making in that case.
         if (!response?.ok) return auth.token;
@@ -2377,7 +2338,7 @@
         const timeout = metadataRequestTimeout(doc, options);
         if (timeout <= 0) return auth.accountIds;
 
-        const response = await fetchWithTimeout(doc, CHATGPT_ACCOUNTS_ENDPOINT, {
+        const response = await fetchWithoutTimeout(doc, CHATGPT_ACCOUNTS_ENDPOINT, {
             headers: chatGptAuthHeaders({ token: auth.token })
         }, timeout);
         if (!response?.ok) return auth.accountIds;
@@ -2412,7 +2373,7 @@
             : options);
         if (timeout <= 0) return { reason: 'timeout' };
 
-        const response = await fetchWithTimeout(doc, endpoint, {
+        const response = await fetchWithoutTimeout(doc, endpoint, {
             headers: chatGptAuthHeaders(options.chatGptAuth)
         }, timeout);
         if (!response) return { reason: 'network' };
@@ -2467,7 +2428,7 @@
         const timeout = metadataRequestTimeout(doc, options);
         if (timeout <= 0) return { reason: 'timeout' };
 
-        const response = await fetchWithTimeout(doc, endpoint, {
+        const response = await fetchWithoutTimeout(doc, endpoint, {
             headers: {
                 ...chatGptAuthHeaders(options.chatGptAuth),
                 Accept: 'text/event-stream'
@@ -2727,7 +2688,7 @@
         const endpoint = `/backend-api/files/download/${encodeURIComponent(descriptor.fileId)}?inline=true`;
         // The same private API behind the same session: without the bearer
         // token this hands back the signed-out shape rather than the file.
-        let response = await fetchWithTimeout(doc, endpoint, {
+        let response = await fetchWithoutTimeout(doc, endpoint, {
             headers: chatGptAuthHeaders(options.chatGptAuth)
         }, timeout, response => readImageBody(response, maxBytes));
         if (!response?.ok) return null;
@@ -2747,7 +2708,7 @@
             const sameOrigin = isSameOrigin(doc, downloadUrl);
             timeout = attachmentRequestTimeout(doc, options);
             if (timeout <= 0) return null;
-            response = await fetchWithTimeout(doc, downloadUrl, sameOrigin
+            response = await fetchWithoutTimeout(doc, downloadUrl, sameOrigin
                 ? { credentials: 'include', headers: chatGptAuthHeaders(options.chatGptAuth) }
                 : { credentials: 'omit', redirect: 'follow' }, timeout, response => readImageBody(response, maxBytes));
             if (!response?.ok) return null;
@@ -2775,7 +2736,7 @@
         if (!deferred || deferred.size === 0) return;
         budget.deferred = null;
         const win = getWindow(doc);
-        const until = now(win) + PAGE_MEDIA_MAX_DURATION;
+        const until = Infinity;
         const tokens = Array.from(deferred.keys()).filter(token => messages.some(message => String(message.content).includes(token)));
         const resolved = new Map();
         for (const [index, token] of tokens.entries()) {
@@ -2783,9 +2744,8 @@
             const maxBytes = Math.min(budget.perImage, budget.remaining);
             let dataUrl = '';
             if (maxBytes > 0) {
-                const timeout = Math.min(METADATA_FETCH_TIMEOUT, until - now(win));
-                const response = timeout > 0 ? await fetchWithTimeout(doc, url, { credentials: 'omit' }, timeout,
-                    response => readImageBody(response, maxBytes)) : null;
+                const response = await fetchWithoutTimeout(doc, url, { credentials: 'omit' }, Infinity,
+                    response => readImageBody(response, maxBytes));
                 const mimeType = imageMimeType(response?.headers?.get?.('content-type'));
                 if (response?.ok && mimeType && response.body instanceof Uint8Array && response.body.byteLength > 0) {
                     dataUrl = bytesToDataUrl(response.body, mimeType, doc);
@@ -3348,47 +3308,29 @@
     // been quiet for `quiet` ms, and never waits longer than the old fixed
     // delay — so this can only be faster, never less thorough. Falls back to
     // the plain sleep where MutationObserver is unavailable.
-    function awaitRenderSettled(doc, container, maxWait, quiet) {
+    function awaitRenderSettled(doc, container, _ignoredMaximumWait, quiet) {
         const win = getWindow(doc);
-        const setTimer = win?.setTimeout?.bind(win) || setTimeout;
-        const clearTimer = win?.clearTimeout?.bind(win) || clearTimeout;
         const ObserverCtor = win?.MutationObserver || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
-
+        const requestFrame = win?.requestAnimationFrame?.bind(win) ||
+            (callback => Promise.resolve().then(() => callback(now(win))));
         if (typeof ObserverCtor !== 'function' || !container || typeof container.isConnected !== 'boolean') {
-            return new Promise(resolve => setTimer(resolve, maxWait));
-        }
-
-        return new Promise(resolve => {
-            let quietTimer = null;
-            let settled = false;
-            const observer = new ObserverCtor(() => {
-                clearTimer(quietTimer);
-                quietTimer = setTimer(finish, quiet);
+            return new Promise(resolve => {
+                const started = now(win);
+                const check = () => now(win) - started >= quiet ? resolve() : requestFrame(check);
+                requestFrame(check);
             });
-
-            function finish() {
-                if (settled) return;
-                settled = true;
-                clearTimer(quietTimer);
-                clearTimer(ceiling);
-                try {
+        }
+        let lastMutation = now(win);
+        const observer = new ObserverCtor(() => { lastMutation = now(win); });
+        return new Promise(resolve => {
+            observer.observe(container, { childList: true, subtree: true, characterData: true });
+            const check = () => {
+                if (now(win) - lastMutation >= quiet) {
                     observer.disconnect();
-                } catch (error) {
-                    // Already gone; nothing to release.
-                }
-                resolve();
-            }
-
-            const ceiling = setTimer(finish, maxWait);
-            try {
-                observer.observe(container, { childList: true, subtree: true, characterData: true });
-            } catch (error) {
-                finish();
-                return;
-            }
-            // Nothing mounting at all still costs one quiet interval, not a
-            // full delay.
-            quietTimer = setTimer(finish, quiet);
+                    resolve();
+                } else requestFrame(check);
+            };
+            requestFrame(check);
         });
     }
 
@@ -3542,12 +3484,8 @@
             return waiting;
         };
 
-        // An export must not be able to hang the page: every phase runs against
-        // one wall-clock budget, however slow the provider is.
-        // Extended, not consumed, while the tab is hidden — see awaitVisible.
-        let deadline = now(win) + (options.maxDuration ?? DEFAULT_MAX_DURATION);
-        const outOfTime = () => now(win) >= deadline;
-        let hiddenBudget = options.maxHiddenWait ?? MAX_HIDDEN_WAIT;
+        // The extraction process is not terminated by an elapsed-time budget.
+        const outOfTime = () => false;
 
         // A hidden tab gets its timers throttled and its off-screen rendering
         // suspended, so the sweep crawls and the provider may never mount the
@@ -3564,14 +3502,9 @@
             console.warn('[Chat Exporter] This tab is in the background — bring it to the front to continue. The export clock is paused while it waits.');
             emitProgress(describe('hidden'));
             const startedHidden = now(win);
-            while (doc.hidden && now(win) - startedHidden < hiddenBudget) {
+            while (doc.hidden) {
                 await wait(200);
             }
-
-            const waited = now(win) - startedHidden;
-            hiddenBudget -= waited;
-            // Time spent waiting on a person is not time spent exporting.
-            deadline += waited;
 
             if (doc.hidden) {
                 console.warn(`[Chat Exporter] Still in the background after ${Math.round(waited / 1000)}s — exporting only what is currently on the page.`);
@@ -3709,15 +3642,11 @@
         const awaitOlderHistory = async scroller => {
             const height = scroller.scrollHeight;
             emitProgress(describe('history'));
-            let quietSince = now(win);
-            while (now(win) - quietSince < historyWait && !outOfTime()) {
+            while (!outOfTime()) {
                 scroller.scrollTop = scrollRange(scroller).top;
                 await wait(Math.min(scrollDelay, 250));
                 if (scroller.scrollHeight !== height) return true;
-                if (doc.hidden) {
-                    if (!(await awaitVisible())) return false;
-                    quietSince = now(win);
-                }
+                if (doc.hidden && !(await awaitVisible())) return false;
             }
             return scroller.scrollHeight !== height;
         };
@@ -4471,11 +4400,12 @@
         // Revoking synchronously can abort the download in Firefox-based
         // browsers; give the browser a moment to grab the blob first.
         const revoke = () => urlApi.revokeObjectURL(url);
-        if (typeof win?.setTimeout === 'function') {
-            win.setTimeout(revoke, 2000);
-        } else {
-            revoke();
-        }
+        const requestFrame = win?.requestAnimationFrame?.bind(win);
+        if (requestFrame) {
+            const started = now(win);
+            const tick = timestamp => timestamp - started >= 2000 ? revoke() : requestFrame(tick);
+            requestFrame(tick);
+        } else revoke();
     }
 
     function finishExport(doc, conversation, format, options) {
