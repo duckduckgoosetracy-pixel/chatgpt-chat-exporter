@@ -79,15 +79,15 @@ function userscriptHeader(name, version, description, fileName) {
     // GitHub is the canonical distribution channel (issue #34): the GreasyFork
     // listing went stale at a higher version number, so installs from GitHub
     // must carry their own update/download URLs to keep updating from GitHub.
-    const rawUrl = `https://github.com/rashidazarang/chatgpt-chat-exporter/raw/master/${fileName}`;
+    const rawUrl = `https://github.com/duckduckgoosetracy-pixel/chatgpt-chat-exporter/raw/master/${fileName}`;
     return `// ==UserScript==
 // @name         ${name}
-// @namespace    https://github.com/rashidazarang/chatgpt-chat-exporter
+// @namespace    https://github.com/duckduckgoosetracy-pixel/chatgpt-chat-exporter
 // @version      ${version}
 // @description  ${description}
 // @author       rashidazarang
-// @homepageURL  https://github.com/rashidazarang/chatgpt-chat-exporter
-// @supportURL   https://github.com/rashidazarang/chatgpt-chat-exporter/issues
+// @homepageURL  https://github.com/duckduckgoosetracy-pixel/chatgpt-chat-exporter
+// @supportURL   https://github.com/duckduckgoosetracy-pixel/chatgpt-chat-exporter/issues
 // @downloadURL  ${rawUrl}
 // @updateURL    ${rawUrl}
 // @match        https://chat.openai.com/*
