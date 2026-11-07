@@ -2217,7 +2217,7 @@
         return Array.from(descriptors.values());
     }
 
-    async function fetchWithoutTimeout(doc, input, init = {}, _ignoredTimeout, consume = readJsonBody) {
+    async function fetchWithoutTimeout(doc, input, init = {}, consume = readJsonBody) {
         const win = getWindow(doc);
         const fetcher = win?.fetch?.bind(win);
         if (typeof fetcher !== 'function') return null;
@@ -2383,7 +2383,7 @@
                 ...chatGptAuthHeaders(options.chatGptAuth),
                 Accept: 'text/event-stream'
             }
-        }, undefined, response => response.ok ? response.text() : readJsonBody(response));
+        }, response => response.ok ? response.text() : readJsonBody(response));
         if (!response) return { reason: 'network' };
         if (response.ok) return { reason: 'ok', body: response.body };
 
@@ -2638,7 +2638,7 @@
         // token this hands back the signed-out shape rather than the file.
         let response = await fetchWithoutTimeout(doc, endpoint, {
             headers: chatGptAuthHeaders(options.chatGptAuth)
-        }, undefined, response => readImageBody(response, maxBytes));
+        }, response => readImageBody(response, maxBytes));
         if (!response?.ok) return null;
 
         let contentType = String(response.headers?.get?.('content-type') || '');
@@ -2901,7 +2901,7 @@
             count + item.descriptors.filter(descriptor => descriptor.kind === 'image').length, 0);
         const exportedEntries = new Map();
         const unsavedReplies = interruptedWithoutReply(entries, mainEntries);
-        const imageOptions = { ...options, metadataDeadline: attachmentDeadline(doc, options, images, options.outerDeadline) };
+        const imageOptions = options;
         let imagesRead = 0;
 
         for (const { entry, message, descriptors } of rendered) {
@@ -3002,17 +3002,8 @@
     async function enrichChatGptConversation(conversation, doc, format, options) {
         if (conversation.provider !== 'chatgpt') return conversation;
 
-        const win = getWindow(doc);
-        const outerDeadline = options.metadataDeadline ?? Infinity;
-        // One auth state for the whole pass: the conversation read discovers
-        // the working token and account, and every file download reuses them.
-        // The stored conversation gets the primary read's budget — it is what
-        // proves the sweep complete and fills its holes, and a long one is
-        // megabytes (issue #41). Only what follows it is optional and short.
         const enrichmentOptions = {
             ...options,
-            metadataDeadline: Math.min(outerDeadline, now(win) +
-                (options.conversationMaxDuration ?? options.metadataMaxDuration ?? CONVERSATION_MAX_DURATION)),
             chatGptAuth: options.chatGptAuth || createChatGptAuth(options)
         };
         // The payload-first path may already have fetched (or failed to fetch)
@@ -3021,8 +3012,6 @@
         const payload = 'chatGptPayload' in options
             ? options.chatGptPayload
             : await fetchChatGptPayload(doc, enrichmentOptions);
-        enrichmentOptions.metadataDeadline = Math.min(outerDeadline,
-            now(win) + (options.metadataMaxDuration ?? METADATA_MAX_DURATION));
         if (!payload) {
             conversation.metadataStatus = 'unavailable';
             return conversation;
@@ -3105,7 +3094,7 @@
         const images = Array.from(matches.values()).reduce((count, entry) =>
             count + payloadAttachmentDescriptors(payloadRenderableMessage(entry.message))
                 .filter(descriptor => descriptor.kind === 'image').length, 0);
-        const imageOptions = { ...enrichmentOptions, metadataDeadline: attachmentDeadline(doc, options, images, outerDeadline) };
+        const imageOptions = enrichmentOptions;
 
         for (const [message, entry] of matches.entries()) {
             const nativeMessage = payloadRenderableMessage(entry.message);
@@ -3343,20 +3332,12 @@
                 emit({ phase: 'start', provider: provider.id, messages: 0, lines: 0 });
                 emit({ phase: 'payload', messages: 0, lines: 0, percent: 10 });
 
-                const win = getWindow(doc);
                 const payloadOptions = {
                     ...options,
-                    metadataDeadline: Math.min(options.metadataDeadline ?? Infinity,
-                        now(win) + (options.conversationMaxDuration ?? options.metadataMaxDuration ?? CONVERSATION_MAX_DURATION)),
-                    outerDeadline: options.metadataDeadline ?? Infinity,
                     chatGptAuth: options.chatGptAuth || createChatGptAuth(options)
                 };
                 const payload = await fetchChatGptPayload(doc, payloadOptions);
                 if (payload) {
-                    // Optional reports/media get their own short budget after
-                    // the primary conversation has finished downloading.
-                    payloadOptions.metadataDeadline = Math.min(options.metadataDeadline ?? Infinity,
-                        now(win) + (options.metadataMaxDuration ?? METADATA_MAX_DURATION));
                     emit({ phase: 'rendering', messages: 0, lines: 0, percent: 40 });
                     const conversation = await renderConversationFromPayload(payload, doc, provider, payloadOptions);
                     if (conversation) {
@@ -3773,7 +3754,6 @@
 
         const probeOptions = {
             ...options,
-            metadataDeadline: now(getWindow(doc)) + (options.metadataMaxDuration ?? METADATA_MAX_DURATION),
             chatGptAuth: createChatGptAuth(options)
         };
         const result = await fetchChatGptJson(
